@@ -1,0 +1,26 @@
+# Temporal issue 1578: captured history SHA-256 manifest
+
+Captured before replay; SHA-256 calculated over the SDK's JSON serialization of each fetched history.
+This manifest is derived from the original GitHub Actions evidence logs, not from a new hash calculation.
+
+server_version	sdk_version	run_id	iteration	events	sha256	artifact_relative_path
+1.30.0	1.27.2	43752679857	1	105	e559477f4c9c6dff232c24e5ef6a5cacb6b8efc00f90b9657336f9ad20daa790	evidence/histories/1.27.2/run-001-workflow-9ee00563-75cf-4d43-8b3b-8edb3db70c4d.json
+1.30.0	1.27.2	43752679857	2	105	10e135ec495e748c8e674563df06f862dbae06383bd23c34f61132e01a7e8197	evidence/histories/1.27.2/run-002-workflow-991f25a2-567f-457a-9088-33be654f4b04.json
+1.30.0	1.27.2	43752679857	3	105	aec9812c008b2062cb787d97b807bd00fcba35e0a583e591bf8d96fb12075535	evidence/histories/1.27.2/run-003-workflow-f123ac94-b26a-40ed-a42c-17f19ea1ea0f.json
+1.30.0	1.27.2	43752679857	4	105	d188cc93d409981f56cbcf6728bdfa672cd32a2de9255651598fa93eaa4dbef9	evidence/histories/1.27.2/run-004-workflow-4faac4e1-569e-4f83-9bf6-d1548d19735d.json
+1.30.0	1.36.1	43752679857	1	105	b5d639a03feae055c57eb30d381cac54567c4ab6f67298df2a29bd5b3b17e7b1	evidence/histories/1.36.1/run-001-workflow-9967e763-92e8-4ee4-98df-5ea15f5983b4.json
+1.30.0	1.36.1	43752679857	2	105	740cab4eaefd73c0d2ebe528927cfb162eaf6fc9657ce7bde2542065f12155d0	evidence/histories/1.36.1/run-002-workflow-5f68b33f-6405-42ff-ab3b-d7419680a7a9.json
+1.30.0	1.36.1	43752679857	3	105	f81fcae16083c05d27606ce9a1c3b546c1646303b171a1fb731b007ad8bd07b5	evidence/histories/1.36.1/run-003-workflow-e09dc5fd-25d4-47cc-ab65-18ad58470baa.json
+1.30.0	1.36.1	43752679857	4	105	a1c3f8463b071ae64ba4a71c966ba761dd4555263488837141cfb61e0d588b65	evidence/histories/1.36.1/run-004-workflow-11f1367c-f494-4de3-9048-ba4579ef3f98.json
+1.32.2	1.27.2	43751230705	1	105	8e40e0bb010e2ed46a189631d6a382fc3592c9b0b5a761a17144ddd035ef8103	evidence/histories/1.27.2/run-001-workflow-7fcc0a56-5a77-4203-9865-d9d58fc7ed16.json
+1.32.2	1.27.2	43751230705	2	105	880c65fa6c63e6bfcccd696200e3daa3adaed40d745ab94820cf53360779c8c0	evidence/histories/1.27.2/run-002-workflow-219aa7a9-1d31-4ff3-8215-4099fe26a73f.json
+1.32.2	1.27.2	43751230705	3	105	9f13518f82ffb54ad6258cf783e5558323cadd505da964f42bd9966acf5a711a	evidence/histories/1.27.2/run-003-workflow-ef583988-c433-481b-a22e-90aef57fbc98.json
+1.32.2	1.27.2	43751230705	4	105	e4a3ff8fc733b99953a5e7ab846d7b1f23c6279ac68593e40f29500f57bfbe06	evidence/histories/1.27.2/run-004-workflow-e0dfefdf-cb85-4c82-b72c-df3eed03023b.json
+1.32.2	1.36.1	43751230705	1	105	271e2aecc1effc9b5b90903ced38f0ad5ffcc318402b1fd5f50d76f7594cb148	evidence/histories/1.36.1/run-001-workflow-5d1c51ab-1c62-4fb7-b023-98fe6e4e93a2.json
+1.32.2	1.36.1	43751230705	2	105	b3490195b8ca844424bea9f0e1da08b278eacb8b904d4d88699651f005c7a027	evidence/histories/1.36.1/run-002-workflow-2e298469-f417-4e9b-8053-f6c5603a72fa.json
+1.32.2	1.36.1	43751230705	3	105	ad0cadc49b96bf0d3fa7fd0a522590c5b2e904f7551a0454ed89b13a6f4c680a	evidence/histories/1.36.1/run-003-workflow-6f065116-3162-4313-a15d-592d46bad218.json
+1.32.2	1.36.1	43751230705	4	105	175917190c661f8edcd9dd745135178ffa53878817027ae372df63ce50ee808b	evidence/histories/1.36.1/run-004-workflow-1ac0f65e-10fb-4803-8f67-b62e94f25997.json
+
+# Primary GitHub Actions runs:
+# https://github.com/lucafranco1994pot-cloud/atlas-temporal-replay-1578/actions/runs/43751230705
+# https://github.com/lucafranco1994pot-cloud/atlas-temporal-replay-1578/actions/runs/43752679857
