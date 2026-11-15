@@ -1,0 +1,96 @@
+name: Original reproducer on earlier Temporal server
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/server-alignment.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  server-alignment:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install isolated Python SDK wheels
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence .devserver
+          for v in 1.27.2 1.36.1; do
+            python -m venv "venv-$v"
+            "venv-$v/bin/pip" install -q "temporalio==$v"
+            "venv-$v/bin/python" -c 'import temporalio.bridge,pathlib,hashlib; p=next(pathlib.Path(temporalio.bridge.__file__).parent.glob("*.so")); print("BRIDGE_SHA256="+hashlib.sha256(p.read_bytes()).hexdigest())' | tee -a evidence/environment.txt
+          done
+      - name: Download older server CLI explicitly
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/acquire_old_cli.py <<'PY'
+          import asyncio
+          from temporalio.testing import WorkflowEnvironment
+          async def main():
+              async with await WorkflowEnvironment.start_local(download_dest_dir='.devserver',dev_server_download_version='1.6.0'):
+                  print('OLD_SERVER_BOOT=PASS')
+          asyncio.run(main())
+          PY
+          timeout 240 venv-1.36.1/bin/python -u /tmp/acquire_old_cli.py | tee -a evidence/environment.txt
+          CLI="$(find .devserver -type f -perm /u+x | head -n 1)"
+          test -n "$CLI"
+          echo "TEMPORAL_CLI_PATH=$(realpath "$CLI")" >> "$GITHUB_ENV"
+          "$CLI" --version | tee -a evidence/environment.txt
+          sha256sum "$CLI" | tee -a evidence/environment.txt
+      - name: Original reproducer on SDK 1.27.2
+        env:
+          SDK_VERSION: '1.27.2'
+          EVIDENCE_DIR: evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 600 venv-1.27.2/bin/python -u runner.py --mode generate --repeats 4 | tee evidence/original-1.27.2.log
+      - name: Replay older histories using SDK 1.36.1
+        env:
+          SDK_VERSION: '1.36.1'
+          EVIDENCE_DIR: evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 600 venv-1.36.1/bin/python -u runner.py --mode replay --source-dir evidence/histories/1.27.2 | tee evidence/cross-replay.log
+      - name: Original reproducer on SDK 1.36.1
+        env:
+          SDK_VERSION: '1.36.1'
+          EVIDENCE_DIR: evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 600 venv-1.36.1/bin/python -u runner.py --mode generate --repeats 4 | tee evidence/original-1.36.1.log
+      - name: Summarize observed statuses
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('evidence/results.jsonl')
+          if not p.exists():
+              print('BLOCKED: results.jsonl missing')
+          else:
+              rows=[json.loads(x) for x in p.read_text().splitlines()]
+              for phase in ('original_test','same_version_replay','cross_version_replay'):
+                  for version in ('1.27.2','1.36.1'):
+                      r=[x for x in rows if x['phase']==phase and x.get('sdk')==version]
+                      print(phase,version,'PASS',sum(x['status']=='PASS' for x in r),'FAIL',sum(x['status']=='FAIL' for x in r))
+          PY
+      - name: Preserve histories and environment
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: older-server-evidence-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: warn
