@@ -1,0 +1,88 @@
+name: Isolated await-semantics comparison
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/legacy-shield.yml'
+      - 'probe_legacy_shield.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install SDK and pin Temporal server
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence .devserver
+          python -m venv venv-1.31.0
+          venv-1.31.0/bin/pip install -q temporalio==1.31.0
+          python -m venv venv-1.36.1
+          venv-1.36.1/bin/pip install -q temporalio==1.36.1
+          cat > /tmp/start_cli.py <<'PY'
+          import asyncio
+          from temporalio.testing import WorkflowEnvironment
+          async def main():
+              async with await WorkflowEnvironment.start_local(download_dest_dir='.devserver'):
+                  print('SERVER_BOOT_PASS')
+          asyncio.run(main())
+          PY
+          venv-1.36.1/bin/python /tmp/start_cli.py
+          CLI="$(find .devserver -type f -perm /u+x | head -n 1)"
+          test -n "$CLI"
+          echo "TEMPORAL_CLI_PATH=$(realpath "$CLI")" >> "$GITHUB_ENV"
+          "$CLI" --version | tee evidence/server.txt
+          sha256sum "$CLI" | tee -a evidence/server.txt
+          git clone -q --depth 1 --branch 1.31.0 https://github.com/temporalio/sdk-python.git sdk-1.31.0
+          git -C sdk-1.31.0 rev-parse HEAD | sed 's/^/SDK_COMMIT=/' | tee evidence/sdk.txt
+          git -C sdk-1.31.0 ls-tree HEAD temporalio/bridge/sdk-core | tee -a evidence/sdk.txt
+          venv-1.31.0/bin/python -c 'import temporalio.bridge,pathlib,hashlib; p=next(pathlib.Path(temporalio.bridge.__file__).parent.glob("*.so")); print("BRIDGE_SHA256="+hashlib.sha256(p.read_bytes()).hexdigest())' | tee -a evidence/sdk.txt
+      - name: SDK 1.31.0 untouched baseline
+        shell: bash
+        env:
+          SDK_VERSION: '1.31.0'
+          EVIDENCE_DIR: evidence/baseline
+        run: |
+          set -euo pipefail
+          venv-1.31.0/bin/python -u runner.py --mode generate --repeats 4 | tee evidence/baseline.log
+      - name: SDK 1.31.0 with only legacy await semantics
+        shell: bash
+        env:
+          SDK_VERSION: '1.31.0'
+          EVIDENCE_DIR: evidence/legacy-await
+        run: |
+          set -euo pipefail
+          venv-1.31.0/bin/python -u probe_legacy_shield.py --mode generate --repeats 4 | tee evidence/legacy-await.log
+      - name: Compare independent histories
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for variant in ('baseline','legacy-await'):
+              path=Path('evidence')/variant/'results.jsonl'
+              if not path.exists():
+                  print(variant,'BLOCKED: results file missing')
+                  continue
+              rows=[json.loads(x) for x in path.read_text().splitlines()]
+              runs=[r['status'] for r in rows if r.get('phase')=='original_test']
+              replay=[r['status'] for r in rows if r.get('phase')=='same_version_replay']
+              print(variant,'original',runs,'replay',replay)
+          PY
+      - name: Save histories and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: await-semantics-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: warn
