@@ -1,4 +1,4 @@
-name: Temporal replay environment probe
+name: Temporal replay issue 1578
 on:
   push:
     branches: [main]
@@ -8,62 +8,115 @@ permissions:
   contents: read
 
 jobs:
-  environment:
-    name: Verify SDK tags, Core links, and executable bridge
+  replay:
     runs-on: ubuntu-22.04
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Verify Git checkout and exact Core submodule link at each tag
+      - name: Record exact SDK and Core revisions
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p evidence
-          {
-            echo "OS=$(uname -srm)"
-            echo "PYTHON=$(python --version 2>&1)"
-            echo "GIT=$(git --version)"
-          } | tee evidence/environment.txt
-          for v in 1.27.2 1.36.1; do
-            git clone --quiet --branch "$v" --depth 1 https://github.com/temporalio/sdk-python.git "sdk-$v"
-            echo "SDK_TAG=$v" | tee -a evidence/environment.txt
-            git -C "sdk-$v" rev-parse HEAD | sed 's/^/SDK_COMMIT=/' | tee -a evidence/environment.txt
-            git -C "sdk-$v" ls-tree HEAD temporalio/bridge/sdk-core | tee -a evidence/environment.txt
-            git -C "sdk-$v" ls-tree HEAD temporalio/bridge/sdk-core | awk '{print $3}' | sed "s/^/CORE_SUBMODULE_SHA_$(echo "$v" | tr . _)=/" | tee -a evidence/environment.txt
+          { uname -a; python --version; } > evidence/environment.txt
+          for version in 1.27.2 1.36.1; do
+            git clone -q --depth 1 --branch "$version" https://github.com/temporalio/sdk-python.git "sdk-$version"
+            echo "SDK_TAG=$version" | tee -a evidence/environment.txt
+            git -C "sdk-$version" rev-parse HEAD | sed 's/^/SDK_COMMIT=/' | tee -a evidence/environment.txt
+            git -C "sdk-$version" ls-tree HEAD temporalio/bridge/sdk-core | tee -a evidence/environment.txt
+            git -C "sdk-$version" ls-tree HEAD temporalio/bridge/sdk-core | awk '{print $3}' | sed 's/^/CORE_SUBMODULE_SHA=/' | tee -a evidence/environment.txt
           done
-      - name: Install released Python wheels in isolated environments
+      - name: Install independent SDK versions
         shell: bash
         run: |
           set -euo pipefail
-          for v in 1.27.2 1.36.1; do
-            python -m venv "venv-$v"
-            "venv-$v/bin/python" -m pip install -q --upgrade pip
-            "venv-$v/bin/python" -m pip install -q "temporalio==$v" pytest pytest-asyncio
-            "venv-$v/bin/python" -c 'import temporalio, temporalio.service; print("SDK="+temporalio.service.__version__, "BRIDGE="+temporalio.bridge.__file__)' | tee -a evidence/environment.txt
-            "venv-$v/bin/python" -c 'import temporalio.bridge, pathlib, hashlib; root=pathlib.Path(temporalio.bridge.__file__).parent; matches=sorted(set(root.glob("*.so"))|set(root.glob("*.pyd"))); print("BRIDGE_FILES="+str(matches)); [print(str(p)+" SHA256="+hashlib.sha256(p.read_bytes()).hexdigest()) for p in matches]' | tee -a evidence/environment.txt
+          for version in 1.27.2 1.36.1; do
+            python -m venv "venv-$version"
+            "venv-$version/bin/python" -m pip install -q --upgrade pip
+            "venv-$version/bin/python" -m pip install -q "temporalio==$version"
+            "venv-$version/bin/python" -c 'import temporalio.bridge,temporalio.service,pathlib,hashlib; root=pathlib.Path(temporalio.bridge.__file__).parent; binary=next(root.glob("*.so")); print("SDK="+temporalio.service.__version__,"BRIDGE="+str(binary),"BRIDGE_SHA256="+hashlib.sha256(binary.read_bytes()).hexdigest())' | tee -a evidence/environment.txt
           done
-      - name: Probe local Temporal server availability
+      - name: Acquire one shared Temporal dev server binary
         shell: bash
         run: |
           set -euo pipefail
-          cat > /tmp/probe_temporal.py <<'PY'
+          mkdir -p .devserver
+          cat > /tmp/acquire_cli.py <<'PY'
           import asyncio
           from temporalio.testing import WorkflowEnvironment
           async def main():
-              async with await WorkflowEnvironment.start_local() as env:
-                  print("DEV_SERVER_STARTED")
-                  print("CLIENT_TARGET="+str(env.client.service_client.config.target_host))
-                  print("SERVER_METADATA_NOT_YET_VERIFIED")
+              async with await WorkflowEnvironment.start_local(download_dest_dir='.devserver'):
+                  print('COMMON_SERVER_BOOT=PASS')
           asyncio.run(main())
           PY
-          timeout 240 venv-1.36.1/bin/python -u /tmp/probe_temporal.py | tee -a evidence/environment.txt
-      - name: Upload unmodified environment evidence
+          timeout 240 venv-1.36.1/bin/python -u /tmp/acquire_cli.py | tee -a evidence/environment.txt
+          find .devserver -type f -print | tee -a evidence/environment.txt
+          CLI="$(find .devserver -type f -perm /u+x | head -n 1)"
+          test -n "$CLI"
+          CLI="$(realpath "$CLI")"
+          echo "TEMPORAL_CLI_PATH=$CLI" >> "$GITHUB_ENV"
+          "$CLI" --version | tee -a evidence/environment.txt
+          sha256sum "$CLI" | tee -a evidence/environment.txt
+      - name: Original issue 1578 on SDK 1.27.2
+        shell: bash
+        env:
+          SDK_VERSION: '1.27.2'
+          EVIDENCE_DIR: evidence
+        run: |
+          set -euo pipefail
+          timeout 600 venv-1.27.2/bin/python -u runner.py --mode generate --repeats 4 | tee evidence/original-1.27.2.log
+      - name: Confirm original reproducer before comparison
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          records = [json.loads(x) for x in Path('evidence/results.jsonl').read_text().splitlines()]
+          captures = [x for x in records if x['phase']=='history_capture' and x['sdk']=='1.27.2']
+          failures = [x for x in records if x['phase']=='same_version_replay' and x['sdk']=='1.27.2' and x['status']=='FAIL']
+          print('HISTORIES=',len(captures),'REPLAY_FAILURES=',len(failures))
+          if not captures or not failures:
+              raise SystemExit('STOP: original 1.27.2 reproducer did not fail on a saved replay; setup not validated')
+          PY
+      - name: Replay SDK 1.27.2 histories on 1.36.1
+        shell: bash
+        env:
+          SDK_VERSION: '1.36.1'
+          EVIDENCE_DIR: evidence
+        run: |
+          set -euo pipefail
+          timeout 600 venv-1.36.1/bin/python -u runner.py --mode replay --source-dir evidence/histories/1.27.2 | tee evidence/cross-replay.log
+      - name: Original issue 1578 on SDK 1.36.1
+        shell: bash
+        env:
+          SDK_VERSION: '1.36.1'
+          EVIDENCE_DIR: evidence
+        run: |
+          set -euo pipefail
+          timeout 600 venv-1.36.1/bin/python -u runner.py --mode generate --repeats 4 | tee evidence/original-1.36.1.log
+      - name: Verify history and event counts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[json.loads(x) for x in Path('evidence/results.jsonl').read_text().splitlines()]
+          for version in ('1.27.2','1.36.1'):
+              captures=[x for x in rows if x.get('phase')=='history_capture' and x.get('sdk')==version]
+              runs=[x for x in rows if x.get('phase')=='original_test' and x.get('sdk')==version]
+              print(version,'original_runs=',len(runs),'histories=',len(captures),'results=',[x['status'] for x in runs])
+              for capture in captures:
+                  assert Path(capture['file']).is_file()
+                  assert capture['event_count']>0
+          PY
+      - name: Upload saved histories and execution evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: environment-probe-${{ github.run_id }}
+          name: replay-evidence-${{ github.run_id }}
           path: evidence/
           if-no-files-found: warn
