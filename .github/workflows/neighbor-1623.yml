@@ -1,0 +1,91 @@
+name: Core history boundary regression 1623
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/neighbor-1623.yml'
+      - 'neighbor_1623_regression.rs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core-regression:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain and dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
+          rustc --version | tee evidence/environment.txt
+          cargo --version | tee -a evidence/environment.txt
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq protobuf-compiler libssl-dev pkg-config
+      - name: Fetch exact Core revision from Python SDK 1.36.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone -q --filter=blob:none --depth 1 https://github.com/temporalio/sdk-rust.git core
+          git -C core fetch -q --depth 1 origin c675c32469af707e1c979a7b808c70b4a0608b82
+          git -C core checkout -q --detach FETCH_HEAD
+          git -C core submodule update --init --recursive -q
+          git -C core rev-parse HEAD | sed 's/^/CORE_COMMIT=/' | tee -a evidence/environment.txt
+      - name: Inject unchanged reporter regression test into ephemeral checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path=Path('core/crates/sdk-core/src/worker/workflow/history_update.rs')
+          original=path.read_text()
+          witness=Path('neighbor_1623_regression.rs').read_text()
+          assert original.rstrip().endswith('}')
+          end=original.rfind('}')
+          path.write_text(original[:end]+'\n'+witness+'\n'+original[end:])
+          PY
+          sha256sum neighbor_1623_regression.rs | tee -a evidence/environment.txt
+          git -C core diff -- crates/sdk-core/src/worker/workflow/history_update.rs > evidence/core-test-only.diff
+      - name: Run three deterministic Core test cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd core
+          set +e
+          cargo test -p temporalio-sdk-core --lib legacy_query_does_not_deliver_inputs_before_workflow_task_started -- --nocapture > ../evidence/cargo.log 2>&1
+          code=$?
+          set -e
+          echo "CARGO_EXIT_CODE=$code" | tee -a ../evidence/environment.txt
+          tail -n 110 ../evidence/cargo.log
+          exit 0
+      - name: Classify test failure separately from build failure
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          log=Path('evidence/cargo.log')
+          if not log.exists():
+              print('BLOCKED: no cargo.log')
+          else:
+              text=log.read_text(errors='replace')
+              cases=['activity','timer','signal']
+              for case in cases:
+                  name='legacy_query_does_not_deliver_inputs_before_workflow_task_started::'+case
+                  lines=[x for x in text.splitlines() if name in x and ('FAILED' in x or 'ok' in x)]
+                  print(case,lines[-1] if lines else 'BLOCKED/NOT EXECUTED')
+              if 'error: could not compile' in text:
+                  print('BLOCKED: Rust compilation failed')
+          PY
+      - name: Preserve Core test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-1623-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: warn
