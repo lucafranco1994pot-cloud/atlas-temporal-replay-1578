@@ -32,15 +32,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat > /tmp/acquire_old_cli.py <<'PY'
-          import asyncio
-          from temporalio.testing import WorkflowEnvironment
-          async def main():
-              async with await WorkflowEnvironment.start_local(download_dest_dir='.devserver',dev_server_download_version='1.6.0'):
-                  print('OLD_SERVER_BOOT=PASS')
-          asyncio.run(main())
-          PY
-          timeout 240 venv-1.36.1/bin/python -u /tmp/acquire_old_cli.py | tee -a evidence/environment.txt
+          curl --fail --location --retry 2 --silent --show-error \
+            -o /tmp/temporal_cli_1.6.0_linux_amd64.tar.gz \
+            https://github.com/temporalio/cli/releases/download/v1.6.0/temporal_cli_1.6.0_linux_amd64.tar.gz
+          sha256sum /tmp/temporal_cli_1.6.0_linux_amd64.tar.gz | tee -a evidence/environment.txt
+          tar -xzf /tmp/temporal_cli_1.6.0_linux_amd64.tar.gz -C .devserver
           CLI="$(find .devserver -type f -perm /u+x | head -n 1)"
           test -n "$CLI"
           echo "TEMPORAL_CLI_PATH=$(realpath "$CLI")" >> "$GITHUB_ENV"
