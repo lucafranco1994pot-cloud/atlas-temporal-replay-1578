@@ -1,0 +1,69 @@
+name: Temporal replay environment probe
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  environment:
+    name: Verify SDK tags, Core links, and executable bridge
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify Git checkout and exact Core submodule link at each tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          {
+            echo "OS=$(uname -srm)"
+            echo "PYTHON=$(python --version 2>&1)"
+            echo "GIT=$(git --version)"
+          } | tee evidence/environment.txt
+          for v in 1.27.2 1.36.1; do
+            git clone --quiet --branch "$v" --depth 1 https://github.com/temporalio/sdk-python.git "sdk-$v"
+            echo "SDK_TAG=$v" | tee -a evidence/environment.txt
+            git -C "sdk-$v" rev-parse HEAD | sed 's/^/SDK_COMMIT=/' | tee -a evidence/environment.txt
+            git -C "sdk-$v" ls-tree HEAD temporalio/bridge/sdk-core | tee -a evidence/environment.txt
+            git -C "sdk-$v" ls-tree HEAD temporalio/bridge/sdk-core | awk '{print $3}' | sed "s/^/CORE_SUBMODULE_SHA_$(echo "$v" | tr . _)=/" | tee -a evidence/environment.txt
+          done
+      - name: Install released Python wheels in isolated environments
+        shell: bash
+        run: |
+          set -euo pipefail
+          for v in 1.27.2 1.36.1; do
+            python -m venv "venv-$v"
+            "venv-$v/bin/python" -m pip install -q --upgrade pip
+            "venv-$v/bin/python" -m pip install -q "temporalio==$v" pytest pytest-asyncio
+            "venv-$v/bin/python" -c 'import temporalio, temporalio.service; print("SDK="+temporalio.service.__version__, "BRIDGE="+temporalio.bridge.__file__)' | tee -a evidence/environment.txt
+            "venv-$v/bin/python" -c 'import temporalio.bridge, pathlib, hashlib; root=pathlib.Path(temporalio.bridge.__file__).parent; matches=sorted(set(root.glob("*.so"))|set(root.glob("*.pyd"))); print("BRIDGE_FILES="+str(matches)); [print(str(p)+" SHA256="+hashlib.sha256(p.read_bytes()).hexdigest()) for p in matches]' | tee -a evidence/environment.txt
+          done
+      - name: Probe local Temporal server availability
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/probe_temporal.py <<'PY'
+          import asyncio
+          from temporalio.testing import WorkflowEnvironment
+          async def main():
+              async with await WorkflowEnvironment.start_local() as env:
+                  print("DEV_SERVER_STARTED")
+                  print("CLIENT_TARGET="+str(env.client.service_client.config.target_host))
+                  print("SERVER_METADATA_NOT_YET_VERIFIED")
+          asyncio.run(main())
+          PY
+          timeout 240 venv-1.36.1/bin/python -u /tmp/probe_temporal.py | tee -a evidence/environment.txt
+      - name: Upload unmodified environment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: environment-probe-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: warn
